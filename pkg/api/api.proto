@@ -13,22 +13,34 @@ service Tasks {
   }
 
   rpc Complete(CompleteOptions) returns (Task) {
-    option (limbo.http).post = "/v1/tasks/{id}/complete";
+    option (limbo.http).post = "/v1/tasks/{internal_id}/complete";
+  }
+
+  rpc Reschedule(RescheduleOptions) returns (Task) {
+    option (limbo.http).post = "/v1/tasks/{internal_id}/reschedule";
   }
 
 }
 
 message Task {
-  string id = 1;
+  string internal_id = 1;
 }
 
 message CreateOptions {
   string id = 1;
   repeated string dependencies = 2;
   int64 wait_until = 3;
-  bytes payload = 4;
+  bytes payload = 4 [(gogoproto.casttype) = "encoding/json.RawMessage"];
+  string token = 5;
+  string worker_queue = 6;
 }
 
 message CompleteOptions {
-  string id = 1;
+  string internal_id = 1;
+}
+
+message RescheduleOptions {
+  string internal_id = 1;
+  repeated string dependencies = 2;
+  int64 wait_until = 3;
 }
