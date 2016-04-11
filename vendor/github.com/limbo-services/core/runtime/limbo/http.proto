@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package limbo;
+option go_package = "limbo";
+
+import "github.com/limbo-services/protobuf/gogoproto/gogo.proto";
+
+message HttpRule {
+
+  bool paged = 1;
+  uint32 pageSize = 2;
+  repeated string tags = 3;
+
+  repeated HttpRule alternatives = 200;
+
+  oneof pattern {
+    string get = 101;
+    string post = 102;
+    string patch = 103;
+    string put = 104;
+    string delete = 105;
+  };
+
+}

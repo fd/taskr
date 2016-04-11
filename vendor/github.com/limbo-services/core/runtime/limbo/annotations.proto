@@ -1,0 +1,43 @@
+syntax = "proto2";
+
+package limbo;
+option go_package = "limbo";
+
+import "google/protobuf/descriptor.proto";
+import "github.com/limbo-services/core/runtime/limbo/authn.proto";
+import "github.com/limbo-services/core/runtime/limbo/authz.proto";
+import "github.com/limbo-services/core/runtime/limbo/http.proto";
+import "github.com/limbo-services/core/runtime/limbo/sql.proto";
+
+/*extend google.protobuf.FileOptions {
+}*/
+
+extend google.protobuf.MessageOptions {
+  optional ModelDescriptor model = 51200;
+  optional bool gosqlvaluer      = 51201;
+}
+
+extend google.protobuf.FieldOptions {
+  optional ColumnDescriptor column = 51300;
+  optional JoinDescriptor join     = 51301;
+  optional bool hideInSwagger      = 51302;
+
+  optional string format           = 51303;
+  optional bool   required         = 51304;
+  optional string pattern          = 51305;
+  optional uint32 minLength        = 51306;
+  optional uint32 maxLength        = 51307;
+  optional uint32 minItems         = 51308;
+  optional uint32 maxItems         = 51309;
+}
+
+extend google.protobuf.ServiceOptions {
+  optional AuthnRule default_authn = 51400;
+  optional AuthzRule default_authz = 51401;
+}
+
+extend google.protobuf.MethodOptions {
+  optional AuthnRule authn = 51500;
+  optional AuthzRule authz = 51501;
+  optional HttpRule  http  = 51502;
+}

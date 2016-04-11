@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package limbo;
+option go_package = "limbo";
+
+import "github.com/limbo-services/protobuf/gogoproto/gogo.proto";
+import "google/protobuf/descriptor.proto";
+
+message ModelDescriptor {
+  string table = 1;
+  string message_type = 7;
+
+  repeated ScannerDescriptor scanner = 2;
+  repeated ColumnDescriptor column = 3;
+  repeated JoinDescriptor join = 4;
+
+  repeated ScannerDescriptor deep_scanner = 8;
+  repeated ColumnDescriptor deep_column = 5;
+  repeated JoinDescriptor deep_join = 6;
+}
+
+message ColumnDescriptor {
+  string name = 1;         // set a custom column name
+  bool   ignore = 2;       // ignore this field
+  string message_type = 3;
+  string field_name = 4;
+  string joined_with = 5;
+}
+
+message ScannerDescriptor {
+  string message_type = 1;
+  string name = 2;
+  string fields = 3;
+  repeated ColumnDescriptor column = 4;
+  repeated JoinDescriptor join = 5;
+}
+
+message JoinDescriptor {
+  string name = 1;
+  string key = 2;
+  string foreign_key = 3;
+  string foreign_message_type = 4;
+  string message_type = 5;
+  string field_name = 6;
+  string joined_with = 7;
+  string table = 8;
+}

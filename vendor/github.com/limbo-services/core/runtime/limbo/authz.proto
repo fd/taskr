@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package limbo;
+option go_package = "limbo";
+
+import "github.com/limbo-services/protobuf/gogoproto/gogo.proto";
+
+message AuthzRule {
+  option (gogoproto.gostring) = true;
+
+  // Path to caller identifier.
+  string caller = 1;
+
+  // Path to context identifier.
+  string context = 2;
+
+  // Scope that give permission to call the RPC
+  string scope = 3;
+}

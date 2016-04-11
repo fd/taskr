@@ -3,11 +3,17 @@ package scheduler
 import (
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"runtime"
 	"sort"
 	"time"
 
+	"github.com/limbo-services/proc"
 	"github.com/pborman/uuid"
 	"golang.org/x/net/context"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/cloud/datastore"
 	"google.golang.org/cloud/pubsub"
 )
@@ -16,10 +22,57 @@ const bucketDuration = 10 * time.Second
 
 var errConflict = errors.New("conflict")
 
+func New(projectID, schedulerName string, numWorkers int) proc.Runner {
+	return func(ctx context.Context) <-chan error {
+		out := make(chan error)
+		go func() {
+			defer close(out)
+
+			if numWorkers <= 0 {
+				numWorkers = runtime.NumCPU()
+			}
+
+			ctx = datastore.WithNamespace(ctx, schedulerName)
+
+			s := scheduler{
+				projectID:     projectID,
+				schedulerName: schedulerName,
+				messages:      make(chan *pubsub.Message),
+			}
+
+			err := s.init(ctx)
+			if err != nil {
+				out <- err
+				return
+			}
+
+			log.Printf("running: %q %q", projectID, schedulerName)
+
+			var runners = []proc.Runner{
+				s.pull,
+			}
+
+			for i := 0; i < numWorkers; i++ {
+				runners = append(runners, s.worker)
+			}
+
+			for err := range proc.Run(ctx, runners...) {
+				out <- err
+			}
+		}()
+		return out
+	}
+}
+
 type scheduler struct {
-	datastore *datastore.Client
-	pubsub    *pubsub.Client
-	topic     *pubsub.TopicHandle
+	projectID     string
+	schedulerName string
+	messages      chan *pubsub.Message
+
+	datastore    *datastore.Client
+	pubsub       *pubsub.Client
+	topic        *pubsub.TopicHandle
+	subscription *pubsub.SubscriptionHandle
 }
 
 type Task struct {
@@ -28,7 +81,7 @@ type Task struct {
 	WaitUntil           time.Time `datastore:",noindex"`
 	Payload             []byte    `datastore:",noindex"`
 	PendingDependencies []string
-	Dependencies        []string `datastore:",noindex"`
+	Dependencies        []string
 
 	Created   time.Time `datastore:",noindex"`
 	Updated   time.Time `datastore:",noindex"`
@@ -49,6 +102,160 @@ type WaitingTask struct {
 type WaitingBucket struct {
 	WaitUntil time.Time
 	Completed bool
+}
+
+func (s *scheduler) init(ctx context.Context) error {
+
+	pubsubClient, err := pubsub.NewClient(ctx, s.projectID)
+	if err != nil {
+		return err
+	}
+
+	datastoreClient, err := datastore.NewClient(ctx, s.projectID)
+	if err != nil {
+		return err
+	}
+
+	s.pubsub = pubsubClient
+	s.datastore = datastoreClient
+
+	for {
+		topic := pubsubClient.Topic(s.schedulerName)
+
+		ok, err := topic.Exists(ctx)
+		if err != nil {
+			return err
+		}
+		if ok {
+			s.topic = topic
+			break
+		}
+
+		_, err = pubsubClient.NewTopic(ctx, s.schedulerName)
+		if e, ok := err.(*googleapi.Error); ok && e.Code == http.StatusConflict {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	for {
+		sub := pubsubClient.Subscription(s.schedulerName)
+
+		ok, err := sub.Exists(ctx)
+		if err != nil {
+			return err
+		}
+		if ok {
+			s.subscription = sub
+			break
+		}
+
+		_, err = pubsubClient.NewSubscription(ctx, s.schedulerName, s.topic, 0, nil)
+		if e, ok := err.(*googleapi.Error); ok && e.Code == http.StatusConflict {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *scheduler) pull(ctx context.Context) <-chan error {
+	out := make(chan error)
+	go func() {
+		defer close(out)
+
+		iter, err := s.subscription.Pull(ctx,
+			pubsub.MaxPrefetch(100),
+			pubsub.MaxExtension(10*time.Minute))
+		if err != nil {
+			out <- err
+			return
+		}
+		defer iter.Stop()
+
+		go func() {
+			<-ctx.Done()
+			iter.Stop()
+		}()
+
+		for {
+			msg, err := iter.Next()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				out <- err
+				return
+			}
+
+			select {
+			case s.messages <- msg:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+func (s *scheduler) worker(ctx context.Context) <-chan error {
+	out := make(chan error)
+	go func() {
+		defer close(out)
+
+		for {
+			select {
+			case msg := <-s.messages:
+				s.processMessage(ctx, msg)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+func (s *scheduler) processMessage(ctx context.Context, msg *pubsub.Message) {
+	defer msg.Done(false)
+
+	var (
+		op     = string(msg.Data)
+		taskID string
+		token  string
+	)
+
+	if n, e := fmt.Sscanf(op, "evaluate %s", &taskID); e == nil && n == 1 {
+		err := s.evaluateTask(ctx, taskID)
+		if err != nil {
+			log.Printf("error: %s", err)
+		} else {
+			msg.Done(true)
+		}
+	}
+
+	if n, e := fmt.Sscanf(op, "schedule %s %s", &taskID, &token); e == nil && n == 1 {
+		err := s.scheduleTask(ctx, taskID, token)
+		if err != nil {
+			log.Printf("error: %s", err)
+		} else {
+			msg.Done(true)
+		}
+	}
+
+	if n, e := fmt.Sscanf(op, "complete %s", &taskID); e == nil && n == 1 {
+		err := s.completeTask(ctx, taskID, msg.ID)
+		if err != nil {
+			log.Printf("error: %s", err)
+		} else {
+			msg.Done(true)
+		}
+	}
+
 }
 
 func (s *scheduler) createTask(ctx context.Context, task *Task, token, procID string) error {
@@ -87,7 +294,7 @@ func (s *scheduler) createTask(ctx context.Context, task *Task, token, procID st
 		sort.Strings(current.PendingDependencies)
 
 		if !current.WaitUntil.IsZero() {
-			current.WaitUntil = current.WaitUntil.Truncate(10 * time.Second).UTC()
+			current.WaitUntil = current.WaitUntil.UTC()
 			current.WaitUntilBucket = waitingBucketKey(ctx, procID, current.WaitUntil)
 		}
 
